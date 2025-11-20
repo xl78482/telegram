@@ -44,7 +44,7 @@ export TG_OWNER_ID=你的数字ID
 
 ### 3️⃣ 启动脚本
 ```bash
-python3 tg_time_clock.py
+python3 telegram.py
 ```
 
 ---
@@ -60,7 +60,7 @@ python3 tg_time_clock.py
 **能后台运行吗？**  
 可以：
 ```bash
-nohup python3 tg_time_clock.py &
+nohup python3 telegram.py &
 ```
 
 ---
