@@ -14,41 +14,91 @@ except:
     from backports.zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events, errors
+from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdateProfileRequest
 
-# ============================================
-#                配置区域
-# ============================================
+
+# =====================================================
+#             配置文件自动持久化（重要）
+# =====================================================
+
+ENV_FILE = ".env"
+
+def save_env(data: dict):
+    with open(ENV_FILE, "w") as f:
+        for k, v in data.items():
+            f.write(f"{k}={v}\n")
+
+
+def load_env():
+    if not os.path.exists(ENV_FILE):
+        return None
+    cfg = {}
+    with open(ENV_FILE, "r") as f:
+        for line in f:
+            if "=" in line:
+                k, v = line.strip().split("=", 1)
+                cfg[k] = v
+    return cfg
+
 
 def check_config():
-    config = {}
+    """第一次运行要求输入 → 保存到 .env → 后续自动加载"""
+    cfg = load_env()
+    if cfg:
+        return cfg
 
-    config['TG_API_ID'] = os.getenv("TG_API_ID") or input("请输入你的 Telegram API ID: ")
-    config['TG_API_HASH'] = os.getenv("TG_API_HASH") or input("请输入你的 Telegram API Hash: ")
-    config['TG_BOT_TOKEN'] = os.getenv("TG_BOT_TOKEN") or input("请输入你的 Telegram Bot Token: ")
-    config['TG_OWNER_ID'] = os.getenv("TG_OWNER_ID") or input("请输入你的 Telegram 数字 ID: ")
+    print("✨ 第一次运行，请填写配置信息（以后不会再要求填写）")
 
-    if not all(config.values()):
-        raise SystemExit("配置不完整，请提供所有必需的配置信息。")
+    cfg = {}
+    cfg['TG_API_ID'] = input("请输入你的 Telegram API ID: ").strip()
+    cfg['TG_API_HASH'] = input("请输入你的 Telegram API Hash: ").strip()
+    cfg['TG_BOT_TOKEN'] = input("请输入你的 Telegram Bot Token: ").strip()
+    cfg['TG_OWNER_ID'] = input("请输入你的 Telegram 数字 ID: ").strip()
 
-    return config
+    save_env(cfg)
+    print("🎉 配置已保存，下次运行将自动读取，不再需要输入！")
+
+    return cfg
 
 
-# 获取配置
 config = check_config()
 
-api_id = int(config['TG_API_ID'])
-api_hash = config['TG_API_HASH']
-bot_token = config['TG_BOT_TOKEN']
-owner_id = int(config['TG_OWNER_ID'])
+api_id = int(config["TG_API_ID"])
+api_hash = config["TG_API_HASH"]
+bot_token = config["TG_BOT_TOKEN"]
+owner_id = int(config["TG_OWNER_ID"])
+
+
+# =====================================================
+#               汉化登录提示（重点）
+# =====================================================
+
+def chinese_telethon_patches():
+    """
+    覆盖 Telethon 默认英文提示
+    """
+    from telethon.client.auth import AuthMethods
+
+    AuthMethods._input_phone = lambda self: input("📱 请输入你的手机号（带国家区号，如 +86xxxxxxxx）： ")
+    AuthMethods._input_code = lambda self, *args, **kwargs: input("🔑 请输入收到的验证码： ")
+    AuthMethods._input_password = lambda self, *args, **kwargs: input("🔒 你的账号开启了二步验证，请输入密码： ")
+
+
+chinese_telethon_patches()
+
+
+# =====================================================
+#                Telegram 客户端准备
+# =====================================================
 
 client = TelegramClient("user_session", api_id, api_hash)
 bot = TelegramClient("bot_session", api_id, api_hash)
 
 
-# ============================================
-#                 日志系统
-# ============================================
+# =====================================================
+#                     日志系统
+# =====================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,18 +110,16 @@ def log(section, text):
     logger.info(f"[{section}] {text}")
 
 
-# ============================================
-#           高级正则（更安全）
-# ============================================
+# =====================================================
+#              去除旧时间戳（更安全正则）
+# =====================================================
 
-TIME_TAIL_RE = re.compile(
-    r"(20\d{2}-\d\d-\d\d \d\d:\d\d) [\u2600-\U0001FAFF]$"
-)
+TIME_TAIL_RE = re.compile(r"(20\d{2}-\d\d-\d\d \d\d:\d\d) [\u2600-\U0001FAFF]$")
 
 
-# ============================================
-#            表盘 emoji
-# ============================================
+# =====================================================
+#                     表盘 Emoji
+# =====================================================
 
 CLOCKS = [
     "🕛","🕧","🕐","🕜","🕑","🕝","🕒","🕞",
@@ -83,38 +131,40 @@ def clock_for(hour, minute):
     return CLOCKS[(hour % 12) * 2 + (1 if minute >= 30 else 0)]
 
 
-# ============================================
-#        精准等待
-# ============================================
+# =====================================================
+#                精准等待
+# =====================================================
 
-async def wait_until(target_time):
+async def wait_until(ts):
     while True:
-        now = datetime.now().timestamp()
-        remain = target_time - now
+        now = time.time()
+        remain = ts - now
         if remain <= 0:
             return
-        await asyncio.sleep(min(remain, 0.2))
+        await asyncio.sleep(min(0.2, remain))
 
 
-# ============================================
-#         主昵称更新循环
-# ============================================
+# =====================================================
+#        ★★★ 防止重复运行的 update_loop ★★★
+# =====================================================
+
+update_task = None
+update_running = False
 
 async def update_loop():
+    global update_running
+    update_running = True
+
     tz = ZoneInfo("Asia/Shanghai")
+    await client.start()  # 这里就会触发中文提示登录
 
-    await client.start()
-    me = await client.get_me()
-    base_name = me.first_name
+    log("启动", "昵称时间更新循环已开始")
 
-    log("启动", "昵称更新循环已开始")
-
-    while True:
+    while update_running:
         try:
             now = datetime.now(tz)
-            next_minute = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
-
-            await wait_until(next_minute.timestamp())
+            next_m = (now + timedelta(minutes=1)).replace(second=0, microsecond=0)
+            await wait_until(next_m.timestamp())
 
             now = datetime.now(tz)
             time_str = now.strftime("%Y-%m-%d %H:%M")
@@ -125,10 +175,9 @@ async def update_loop():
             cleaned = TIME_TAIL_RE.sub("", raw).strip()
 
             new_name = f"{cleaned} {time_str} {emoji}"
-
             await client(UpdateProfileRequest(first_name=new_name))
 
-            log("更新时间", f"{new_name}")
+            log("更新时间", new_name)
 
         except errors.FloodWaitError as e:
             log("限频", f"等待 {e.seconds}s")
@@ -139,10 +188,20 @@ async def update_loop():
             await asyncio.sleep(3)
 
 
+def restart_update_loop():
+    global update_task, update_running
 
-# ============================================
-#         Bot 控制模块
-# ============================================
+    update_running = False
+    if update_task:
+        update_task.cancel()
+
+    update_task = asyncio.create_task(update_loop())
+    log("重启", "昵称更新循环已重启")
+
+
+# =====================================================
+#                      Bot 控制
+# =====================================================
 
 START_TIME = time.time()
 
@@ -157,46 +216,44 @@ async def bot_handler(event):
 
     if text == "/status":
         uptime = int(time.time() - START_TIME)
-        msg = (
-            f"🟢 *脚本状态*\n\n"
-            f"⏱ 北京时间：`{now.strftime('%Y-%m-%d %H:%M:%S')}`\n"
-            f"📡 运行时长：`{uptime}s`\n"
+        await event.respond(
+            f"🟢 *脚本运行状态*\n"
+            f"⏰ 当前时间：`{now}`\n"
+            f"⏱ 运行时长：`{uptime}s`\n"
+            f"🔄 循环状态：`{'运行中' if update_running else '已停止'}`",
+            parse_mode="markdown"
         )
-        await event.respond(msg, parse_mode="markdown")
 
     elif text == "/nickname":
         me = await client.get_me()
         await event.respond(f"👤 当前昵称：`{me.first_name}`", parse_mode="markdown")
 
     elif text == "/ping":
-        await event.respond("🏓 Pong！脚本正常运行中。")
+        await event.respond("🏓 Pong！脚本正常运行。")
 
     elif text == "/restart":
-        await event.respond("♻️ 正在重启更新循环…")
-        asyncio.create_task(update_loop())
+        await event.respond("♻️ 正在重启循环…")
+        restart_update_loop()
 
     else:
         await event.respond(
             "📌 命令列表：\n"
             "/status - 查看状态\n"
-            "/nickname - 查看当前昵称\n"
-            "/ping - 测试脚本响应\n"
-            "/restart - 重启更新循环"
+            "/nickname - 当前昵称\n"
+            "/ping - 测试\n"
+            "/restart - 重启时间循环"
         )
 
 
-# ============================================
-#                 主入口（已修复）
-# ============================================
+# =====================================================
+#                    主入口
+# =====================================================
 
 async def main():
     await bot.start(bot_token=bot_token)
-
-    asyncio.create_task(update_loop())
-
+    restart_update_loop()
     await bot.run_until_disconnected()
 
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
